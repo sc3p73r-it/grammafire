@@ -1,0 +1,180 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net (default deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper Primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isOwner(ownerId) {
+      return isSignedIn() && request.auth.uid == ownerId;
+    }
+
+    // Admin email check (as requested by skill schema if app has admin concepts)
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'vitaltechmyanmar@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // Entity Validations
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['email', 'displayName', 'tier', 'createdAt'])
+        && data.keys().size() == 4
+        && data.email is string && data.email.size() <= 256
+        && data.displayName is string && data.displayName.size() <= 256
+        && data.tier is string && (data.tier == 'free' || data.tier == 'pro')
+        && data.createdAt is timestamp;
+    }
+
+    function isValidDocument(data) {
+      return data.keys().hasAll(['title', 'content', 'ownerId', 'ownerEmail', 'language', 'collaborators', 'createdAt', 'updatedAt'])
+        && data.keys().size() == 8
+        && data.title is string && data.title.size() <= 512
+        && data.content is string && data.content.size() <= 100000
+        && data.ownerId is string && data.ownerId == request.auth.uid
+        && data.ownerEmail is string
+        && data.language is string && (data.language == 'en' || data.language == 'my')
+        && data.collaborators is list
+        && data.collaborators.size() <= 50
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidRevision(data) {
+      return data.keys().hasAll(['documentId', 'content', 'originalContent', 'corrections', 'createdAt', 'authorId'])
+        && data.keys().size() == 6
+        && data.documentId is string
+        && data.content is string && data.content.size() <= 100000
+        && data.originalContent is string && data.originalContent.size() <= 100000
+        && data.corrections is list
+        && data.createdAt is timestamp
+        && data.authorId is string && data.authorId == request.auth.uid;
+    }
+
+    // Core Matching Rules
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow list: if isAdmin();
+      
+      // Creating user profiles
+      allow create: if isSignedIn() 
+        && request.auth.uid == userId
+        && isValidUser(incoming())
+        && incoming().tier == 'free' // Force free tier at start from client
+        && incoming().createdAt == request.time;
+
+      // Allow updating profiles (except they cannot elevate their own tier!)
+      allow update: if isSignedIn()
+        && request.auth.uid == userId
+        && isValidUser(incoming())
+        && incoming().createdAt == existing().createdAt
+        && (
+          incoming().diff(existing()).affectedKeys().hasOnly(['displayName']) ||
+          // Admin can change tier, but user cannot
+          (incoming().tier == existing().tier && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'tier'])) ||
+          isAdmin()
+        );
+        
+      allow delete: if isAdmin();
+    }
+
+    match /documents/{documentId} {
+      // Helper to check if user has read access
+      function hasReadAccess(docData) {
+        return isSignedIn() && (
+          docData.ownerId == request.auth.uid || 
+          docData.ownerEmail == request.auth.token.email ||
+          docData.collaborators.hasAny([request.auth.uid, request.auth.token.email]) ||
+          isAdmin()
+        );
+      }
+
+      // Helper to check if user has write access
+      function hasWriteAccess(docData) {
+        return isSignedIn() && (
+          docData.ownerId == request.auth.uid || 
+          docData.collaborators.hasAny([request.auth.uid, request.auth.token.email]) ||
+          isAdmin()
+        );
+      }
+
+      allow get: if isValidId(documentId) && hasReadAccess(existing());
+      allow list: if isSignedIn() && (
+        resource.data.ownerId == request.auth.uid ||
+        resource.data.collaborators.hasAny([request.auth.uid, request.auth.token.email]) ||
+        isAdmin()
+      );
+
+      allow create: if isValidId(documentId)
+        && isSignedIn()
+        && isValidDocument(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isValidId(documentId)
+        && isSignedIn()
+        && hasWriteAccess(existing())
+        && isValidDocument(incoming())
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action 1: Owner updates content, title, language, collaborators or edits
+          (existing().ownerId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasAny(['title', 'content', 'language', 'collaborators', 'updatedAt'])) ||
+          // Action 2: Collaborator updates only content (Real-time live cursor syncing/editing)
+          (existing().collaborators.hasAny([request.auth.uid, request.auth.token.email]) && incoming().diff(existing()).affectedKeys().hasOnly(['content', 'updatedAt'])) ||
+          isAdmin()
+        );
+
+      allow delete: if isValidId(documentId)
+        && isSignedIn()
+        && (existing().ownerId == request.auth.uid || isAdmin());
+
+      // Historical Revisions Subcollection
+      match /revisions/{revisionId} {
+        allow get: if isValidId(revisionId)
+          && isSignedIn()
+          && hasReadAccess(get(/databases/$(database)/documents/documents/$(documentId)).data);
+
+        allow list: if isSignedIn()
+          && hasReadAccess(get(/databases/$(database)/documents/documents/$(documentId)).data);
+
+        allow create: if isValidId(revisionId)
+          && isSignedIn()
+          && hasWriteAccess(get(/databases/$(database)/documents/documents/$(documentId)).data)
+          && isValidRevision(incoming())
+          && incoming().documentId == documentId
+          && incoming().createdAt == request.time;
+
+        // Revisions are read-only historic records
+        allow update, delete: if false;
+      }
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "GrammaFire",
+  "description": "GrammaFire: Real-time English & Myanmar grammar checker with persistent document history, live collaboration, file exports, and tiered premium subscription.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

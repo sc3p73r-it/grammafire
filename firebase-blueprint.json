@@ -1,0 +1,60 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile with tier subscription data",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "tier": { "type": "string", "enum": ["free", "pro"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "displayName", "tier"]
+    },
+    "Document": {
+      "title": "Document",
+      "description": "Grammar document with content, language and collaboration info",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "content": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "ownerEmail": { "type": "string" },
+        "language": { "type": "string", "enum": ["en", "my"] },
+        "collaborators": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "content", "ownerId", "language"]
+    },
+    "Revision": {
+      "title": "Revision",
+      "description": "Past correction history for a document",
+      "type": "object",
+      "properties": {
+        "documentId": { "type": "string" },
+        "content": { "type": "string" },
+        "originalContent": { "type": "string" },
+        "corrections": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "authorId": { "type": "string" }
+      },
+      "required": ["documentId", "content", "originalContent", "createdAt", "authorId"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile collection"
+    },
+    "/documents/{documentId}": {
+      "schema": "Document",
+      "description": "Shared documents for grammar checking and real-time editing"
+    },
+    "/documents/{documentId}/revisions/{revisionId}": {
+      "schema": "Revision",
+      "description": "Historic changes and grammar corrections for a document"
+    }
+  }
+}
